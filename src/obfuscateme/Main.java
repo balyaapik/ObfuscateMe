@@ -350,7 +350,7 @@ public class Main extends javax.swing.JFrame {
         consoleArea.append("Decompiling APK file: " + selectedApkPath + "\n");
         consoleArea.append("Output directory: " + outputDirectory + "\n");
 
-        String apkToolPath = new File("lib/apktool.jar").getAbsolutePath();
+        String apkToolPath = ToolLocator.require("apktool.jar");
         ProcessBuilder processBuilder = new ProcessBuilder(
                 "java", "-jar", apkToolPath,
                 "d",
