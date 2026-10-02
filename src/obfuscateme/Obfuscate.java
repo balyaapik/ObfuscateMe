@@ -255,76 +255,78 @@ public class Obfuscate extends javax.swing.JFrame {
 
     // Methods and Classes for Obfuscating
     // Collect names from the selected package
-    private void collectNames() throws IOException {
+    private boolean collectNames() throws IOException {
         Path decompiledDir = Paths.get(Main.decompiledApkPath);
         classRenameMap.clear();
         methodRenameMap.clear();
         fieldVariableRenameMap.clear();
         methodUsageMap.clear();
 
-        // Suggested default file name
         String defaultFileName = Main.publicAPKFileName + "_refactoring_map.txt";
 
         JFileChooser fileChooser = new JFileChooser();
         fileChooser.setDialogTitle("Select where to save the refactoring map log");
-        fileChooser.setSelectedFile(new File(defaultFileName));  // Set the default file name
+        fileChooser.setSelectedFile(new File(defaultFileName));
         fileChooser.setCurrentDirectory(decompiledDir.getParent().toFile());
-        FileNameExtensionFilter txtFilter = new FileNameExtensionFilter("Text Files (*.txt)", "txt");
-        fileChooser.setFileFilter(txtFilter);
+        fileChooser.setFileFilter(new FileNameExtensionFilter("Text Files (*.txt)", "txt"));
 
         int userSelection = fileChooser.showSaveDialog(null);
+        if (userSelection != JFileChooser.APPROVE_OPTION) {
+            enableConsole();
+            consoleArea.append("Obfuscation canceled before any files were changed.\n");
+            consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
+            return false;
+        }
 
-        if (userSelection == JFileChooser.APPROVE_OPTION) {
-            File fileToSave = fileChooser.getSelectedFile();
+        File fileToSave = fileChooser.getSelectedFile();
+        if (!fileToSave.getName().endsWith(".txt")) {
+            fileToSave = new File(fileToSave.getAbsolutePath() + ".txt");
+        }
 
-            // Ensure the file has a .txt extension if the user didn't provide one
-            if (!fileToSave.getName().endsWith(".txt")) {
-                fileToSave = new File(fileToSave.getAbsolutePath() + ".txt");
-            }
+        loadingLabel.setVisible(true);
 
-            try (BufferedWriter writer = Files.newBufferedWriter(fileToSave.toPath())) {
-                for (String selectedPackageName : selectedPackageNames) {
-                    loadingLabel.setVisible(true);
-
-                    // Keep the maps accumulated across every selected package.
-                    // Clearing here used to make multi-package obfuscation retain
-                    // only the last package processed.
-                    Files.walkFileTree(decompiledDir, new SimpleFileVisitor<Path>() {
-                        @Override
-                        public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                            String fileName = file.getFileName().toString();
-                            if (fileName.endsWith(".smali") && !fileName.contains("$") && !fileName.startsWith("R")) {
-                                String content = Files.readString(file);
-                                String filePackagePath = getPackagePath(decompiledDir, file);
-
-                                if (selectedPackageName.equals(filePackagePath)) {
-                                    processFileForObfuscation(content, fileName, filePackagePath);
-                                }
-                                // Collect external method usages across all files
-                                findMethodUsages(file, content);
-                            }
-                            return FileVisitResult.CONTINUE;
-                        }
-                    });
-
-                    // Log the collected names for each package
-                    logCollectedNamesForObfuscation(selectedPackageName, classRenameMap, methodRenameMap, fieldVariableRenameMap, writer);
+        // Scan the decompiled tree only once. The previous implementation
+        // rescanned the entire APK for every selected package.
+        Files.walkFileTree(decompiledDir, new SimpleFileVisitor<Path>() {
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                String fileName = file.getFileName().toString();
+                if (!fileName.endsWith(".smali") || fileName.contains("$") || fileName.startsWith("R")) {
+                    return FileVisitResult.CONTINUE;
                 }
 
-                enableConsole();
-                consoleArea.append("Refactoring map successfully saved to: " + fileToSave.getAbsolutePath() + "\n");
-                consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
-            } catch (IOException e) {
-                enableConsole();
-                consoleArea.append("Error saving the refactoring map: " + e.getMessage());
-                consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
+                String content = Files.readString(file);
+                String filePackagePath = getPackagePath(decompiledDir, file);
+
+                if (selectedPackageNames.contains(filePackagePath)) {
+                    processFileForObfuscation(content, fileName, filePackagePath);
+                }
+
+                findMethodUsages(file, content);
+                return FileVisitResult.CONTINUE;
             }
-        } else {
-            // Optionally, handle the case where the user cancels the file save operation
-            enableConsole();
-            consoleArea.append("User canceled the file save operation.");
-            consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
+        });
+
+        try (BufferedWriter writer = Files.newBufferedWriter(fileToSave.toPath())) {
+            writer.write("Selected packages: " + String.join(", ", selectedPackageNames));
+            writer.newLine();
+            writer.newLine();
+            logCollectedNamesForObfuscation(
+                    "all selected packages",
+                    classRenameMap,
+                    methodRenameMap,
+                    fieldVariableRenameMap,
+                    writer
+            );
         }
+
+        enableConsole();
+        consoleArea.append("Refactoring map successfully saved to: " + fileToSave.getAbsolutePath() + "\n");
+        consoleArea.append("Prepared " + classRenameMap.size() + " class, "
+                + methodRenameMap.size() + " method, and "
+                + fieldVariableRenameMap.size() + " field mapping(s).\n");
+        consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
+        return true;
     }
 
     public static String generateValidUUID() {
@@ -1249,11 +1251,11 @@ public class Obfuscate extends javax.swing.JFrame {
             // Get the selected packages from the table
             updatePackageNamesFromTable(selectedPackagesTable);
 
-            // Collect class and method names wihtin the specified package
-            collectNames();
-
-            // Apply refactoring wihtin the tageted package
-            refactorNames();
+            // Build the mapping first. If the user cancels the mapping
+            // file dialog, no APK content is changed.
+            if (collectNames()) {
+                refactorNames();
+            }
         } catch (IOException e) {
             loadingLabel.setVisible(false);
             enableConsole();
