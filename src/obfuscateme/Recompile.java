@@ -13,10 +13,12 @@ import java.io.InputStreamReader;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import javax.swing.JFileChooser;
 import javax.swing.JOptionPane;
+import javax.swing.JPasswordField;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
 import javax.swing.filechooser.FileNameExtensionFilter;
@@ -478,6 +480,28 @@ public class Recompile extends javax.swing.JFrame {
         worker.execute();
     }
 
+    private String promptPassword(String message) {
+        JPasswordField passwordField = new JPasswordField();
+        int result = JOptionPane.showConfirmDialog(
+                this,
+                passwordField,
+                message,
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE
+        );
+
+        if (result != JOptionPane.OK_OPTION) {
+            return null;
+        }
+
+        char[] password = passwordField.getPassword();
+        try {
+            return new String(password);
+        } finally {
+            Arrays.fill(password, '\0');
+        }
+    }
+
     private void signApkFile(File apkFile) {
         consoleArea.append("Signing APK file...\n");
         consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
@@ -502,10 +526,11 @@ public class Recompile extends javax.swing.JFrame {
                 File keystoreFile = fileChooser.getSelectedFile();
                 String keystorePath = keystoreFile.getAbsolutePath(); // Get the selected keystore path
 
-                // Prompt the user for key alias, keystore password, and key password
+                // Prompt for the alias normally, but never display signing
+                // passwords as plain text in the UI.
                 String keyAlias = JOptionPane.showInputDialog("Enter the key alias:");
-                String keystorePassword = JOptionPane.showInputDialog("Enter the keystore password:");
-                String keyPassword = JOptionPane.showInputDialog("Enter the key password:");
+                String keystorePassword = promptPassword("Enter the keystore password:");
+                String keyPassword = promptPassword("Enter the key password:");
 
                 if (keyAlias != null && keystorePassword != null && keyPassword != null) {
                     // Build the process to sign with the provided key details
@@ -550,12 +575,12 @@ public class Recompile extends javax.swing.JFrame {
             @Override
             protected void process(List<String> chunks) {
                 for (String line : chunks) {
-                    if (line.startsWith("I:") || line.startsWith("V:")) { // Filter informational or verbose messages
-                        String cleanLine = line.substring(2).trim(); // Remove prefix and trim
-                        consoleArea.append(cleanLine + "\n"); // Update the progress label
-                        consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
-                    }
+                    String cleanLine = (line.startsWith("I:") || line.startsWith("V:"))
+                            ? line.substring(2).trim()
+                            : line;
+                    consoleArea.append(cleanLine + "\n");
                 }
+                consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
             }
 
             @Override
@@ -678,12 +703,12 @@ public class Recompile extends javax.swing.JFrame {
             @Override
             protected void process(List<String> chunks) {
                 for (String line : chunks) {
-                    if (line.startsWith("I:") || line.startsWith("V:")) { // Filter informational or verbose messages
-                        String cleanLine = line.substring(2).trim(); // Remove prefix and trim
-                        consoleArea.append(cleanLine + "\n"); // Update the progress label
-                        consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
-                    }
+                    String cleanLine = (line.startsWith("I:") || line.startsWith("V:"))
+                            ? line.substring(2).trim()
+                            : line;
+                    consoleArea.append(cleanLine + "\n");
                 }
+                consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
             }
 
             @Override
