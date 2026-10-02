@@ -11,6 +11,43 @@ The goal is to make reverse engineering more difficult by renaming sensitive par
 
 ---
 
+## 2026 maintained-fork notes
+
+This fork keeps the original MIT attribution and focuses on making the project safer to build and use with current Android APKs.
+
+Current modernization work includes:
+
+- **Java 21 build verification** through GitHub Actions.
+- **Apktool 3.0.3** pinned for decompilation/recompilation.
+- **Uber APK Signer 1.3.0** pinned for APK signing/zip alignment.
+- SHA-256 verification before external Android tools are packaged.
+- Owner-aware Smali mappings such as `Lcom/example/Foo;->loadData` instead of global simple-name replacements.
+- Multi-package mappings are preserved across all selected packages.
+- Conservative keep rules for AndroidManifest.xml, resource XML class references, `android:onClick`, and common Java reflection calls.
+- Android tools are resolved relative to the application rather than relying only on the process working directory.
+
+### Install the pinned Android tools locally
+
+Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\update-tools.ps1
+```
+
+Linux/macOS:
+
+```bash
+bash scripts/update-tools.sh
+```
+
+The scripts download the pinned jars into `lib/` and verify their SHA-256 hashes before installation.
+
+### Scope
+
+ObfuscateMe remains an **APK/Smali obfuscation tool**. It does not currently process Android App Bundles (`.aab`) directly. APKs that depend heavily on JNI, native symbol lookup, generated reflection, serialization-by-field-name, or unusual framework conventions may still require manual keep rules and testing.
+
+---
+
 ## Features ✨
 
 - **APK Decompilation** 🔍: Decompile APK files into readable smali code.

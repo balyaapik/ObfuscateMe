@@ -15,6 +15,7 @@ import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -349,94 +350,98 @@ public class Main extends javax.swing.JFrame {
         consoleArea.append("Decompiling APK file: " + selectedApkPath + "\n");
         consoleArea.append("Output directory: " + outputDirectory + "\n");
 
-        String apkToolPath = new File("lib/apktool.jar").getAbsolutePath();
+        String apkToolPath = ToolLocator.require("apktool.jar");
         ProcessBuilder processBuilder = new ProcessBuilder(
-                "java", "-jar", apkToolPath, "d", selectedApkPath.toAbsolutePath().toString(), "-o", outputDirectory.toAbsolutePath().toString(), "-f"
+                "java", "-jar", apkToolPath,
+                "d",
+                selectedApkPath.toAbsolutePath().toString(),
+                "-o",
+                outputDirectory.toAbsolutePath().toString(),
+                "-f"
         );
-
-        // Redirect error stream to the output stream
         processBuilder.redirectErrorStream(true);
 
-        // SwingWorker to handle the long-running task
         SwingWorker<Boolean, String> worker = new SwingWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
                 Process process = processBuilder.start();
 
-                // Read output from the command
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                     String line;
                     while ((line = reader.readLine()) != null) {
-                        String cleanLine = "";
-                        if (line.startsWith("I:")) {
-                            // Remove the "I:" prefix and any leading whitespace
-                            cleanLine = line.substring(line.indexOf("I:") + 2).trim();
-                        }
-                        consoleArea.append(cleanLine + "\n");
-                        consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
-                        //publish(line); // Publish the progress data to process in the Swing thread
+                        String cleanLine = line.startsWith("I:")
+                                ? line.substring(2).trim()
+                                : line;
+                        publish(cleanLine);
                     }
                 }
-                // Wait for the process to finish
-                int exitCode = process.waitFor();
-                return exitCode == 0;
+
+                return process.waitFor() == 0;
+            }
+
+            @Override
+            protected void process(List<String> chunks) {
+                for (String line : chunks) {
+                    consoleArea.append(line + "\n");
+                }
+                consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
             }
 
             @Override
             protected void done() {
-                // This method is called when the background task (decompilation) is finished
                 try {
-                    boolean success = get(); // Get the result of the background computation
-                    if (success) {
-                        decompiledApkPath = outputDirectory.toAbsolutePath().toString();
-                        publicAPKFileName = apkFileName;
-                        decompileFolderName = String.valueOf(outputDirectory.getFileName());
-
-                        //loadingLabel.setVisible(false);
-                        consoleArea.append("Decompilation completed successfully.\n");
-                        consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
-
-                        // Keep the loading label visible and update the console area
-                        consoleArea.append("Analysing decompiled APK... Please wait!\n");
-                        consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
-
-                        // Create a new background task to launch the Obfuscate frame
-                        SwingWorker<Void, Void> frameWorker = new SwingWorker<Void, Void>() {
-                            @Override
-                            protected Void doInBackground() throws Exception {
-                                // Create and launch the new frame in the background
-                                Obfuscate obfuscateFrame = new Obfuscate();
-                                obfuscateFrame.setVisible(true);
-                                return null;
-                            }
-
-                            @Override
-                            protected void done() {
-                                // Once the new frame is fully visible dispose of the current frame
-                                dispose();
-                            }
-                        };
-
-                        // Execute the background task for launching the new frame
-                        frameWorker.execute();
-
-                    } else {
-                        // Handle decompilation failure
-                        JOptionPane.showMessageDialog(null, "Decompilation failed.", "Decompilation Failed", JOptionPane.ERROR_MESSAGE);
+                    boolean success = get();
+                    if (!success) {
+                        JOptionPane.showMessageDialog(
+                                null,
+                                "Decompilation failed. Check the console for details.",
+                                "Decompilation Failed",
+                                JOptionPane.ERROR_MESSAGE
+                        );
                         consoleArea.append("Decompilation failed.\n");
-                        consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
-                        selectAPKFileButton.setEnabled(true);
-                        decompileButton.setEnabled(true);
+                        loadingLabel.setVisible(false);
+                        selectAPKFileButton.setVisible(true);
+                        decompileButton.setVisible(true);
+                        return;
                     }
-                } catch (InterruptedException | ExecutionException e) {
-                    JOptionPane.showMessageDialog(null, "An error occurred during decompilation.", "Error", JOptionPane.ERROR_MESSAGE);
-                    selectAPKFileButton.setEnabled(true);
-                    decompileButton.setEnabled(true);
+
+                    decompiledApkPath = outputDirectory.toAbsolutePath().toString();
+                    publicAPKFileName = apkFileName;
+                    decompileFolderName = String.valueOf(outputDirectory.getFileName());
+
+                    consoleArea.append("Decompilation completed successfully.\n");
+                    consoleArea.append("Analysing decompiled APK... Please wait!\n");
+                    consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
+
+                    // SwingWorker.done() already runs on the Event Dispatch Thread,
+                    // so constructing/showing the next Swing frame here is safe.
+                    Obfuscate obfuscateFrame = new Obfuscate();
+                    obfuscateFrame.setVisible(true);
+                    dispose();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    JOptionPane.showMessageDialog(
+                            null,
+                            "Decompilation was interrupted.",
+                            "Decompilation Interrupted",
+                            JOptionPane.ERROR_MESSAGE
+                    );
+                } catch (ExecutionException e) {
+                    String message = e.getCause() != null
+                            ? e.getCause().getMessage()
+                            : e.getMessage();
+                    JOptionPane.showMessageDialog(
+                            null,
+                            "An error occurred during decompilation: " + message,
+                            "Decompilation Error",
+                            JOptionPane.ERROR_MESSAGE
+                    );
+                    consoleArea.append("Decompilation error: " + message + "\n");
+                    loadingLabel.setVisible(false);
                 }
             }
         };
 
-        // Start the SwingWorker
         worker.execute();
     }
 
