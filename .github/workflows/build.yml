@@ -30,3 +30,27 @@ jobs:
 
       - name: Compile and package
         run: ant clean jar
+
+      - name: Install pinned Android tools
+        run: bash scripts/update-tools.sh dist/lib
+
+      - name: Verify packaged toolchain
+        run: |
+          test -f dist/ObfuscateMe.jar
+          test -f dist/lib/apktool.jar
+          test -f dist/lib/uber-apk-signer.jar
+          java -jar dist/lib/apktool.jar --version
+          java -jar dist/lib/uber-apk-signer.jar --version
+
+      - name: Add documentation to package
+        run: |
+          cp README.md dist/README.md
+          cp "How to use.txt" dist/"How to use.txt"
+          cp LICENSE dist/LICENSE
+
+      - name: Upload runnable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ObfuscateMe-java21
+          path: dist/
+          if-no-files-found: error
