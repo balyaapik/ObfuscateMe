@@ -54,3 +54,20 @@ jobs:
           name: ObfuscateMe-java21
           path: dist/
           if-no-files-found: error
+
+      - name: Install Android 14 SDK components
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Android 14 APK round-trip test
+        run: bash scripts/test-android14.sh
+
+      - name: Upload Android 14 integration APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: android14-integration-apks
+          path: |
+            build/android14-integration/signed-original/*.apk
+            build/android14-integration/signed-rebuilt/*.apk
+          if-no-files-found: error
