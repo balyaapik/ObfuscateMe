@@ -285,6 +285,12 @@ public class Obfuscate extends javax.swing.JFrame {
 
         loadingLabel.setVisible(true);
 
+        // Build conservative Android keep rules before generating any rename
+        // mappings. Manifest/XML/reflection references are resolved before the
+        // selected packages are processed.
+        collectAndroidKeepRules(decompiledDir);
+        collectMethodUsages(decompiledDir);
+
         // Scan the decompiled tree only once. The previous implementation
         // rescanned the entire APK for every selected package.
         Files.walkFileTree(decompiledDir, new SimpleFileVisitor<Path>() {
@@ -302,7 +308,6 @@ public class Obfuscate extends javax.swing.JFrame {
                     processFileForObfuscation(content, fileName, filePackagePath);
                 }
 
-                findMethodUsages(file, content);
                 return FileVisitResult.CONTINUE;
             }
         });
@@ -325,6 +330,9 @@ public class Obfuscate extends javax.swing.JFrame {
         consoleArea.append("Prepared " + classRenameMap.size() + " class, "
                 + methodRenameMap.size() + " method, and "
                 + fieldVariableRenameMap.size() + " field mapping(s).\n");
+        consoleArea.append("Keep rules protected " + protectedClassDescriptors.size()
+                + " class descriptor(s) and " + protectedMethodNames.size()
+                + " method name(s).\n");
         consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
         return true;
     }
@@ -368,7 +376,9 @@ public class Obfuscate extends javax.swing.JFrame {
         String classDescriptor = toClassDescriptor(packageName, className);
 
         if (classesCheckBox.isSelected()) {
-            if (!loadBlacklistedItems().contains(fullClassName) && !excludedClasses.contains(className)) {
+            if (!loadBlacklistedItems().contains(fullClassName)
+                    && !excludedClasses.contains(className)
+                    && !protectedClassDescriptors.contains(classDescriptor)) {
                 String newClassName = generateObfuscatedName("Class");
                 classRenameMap.putIfAbsent(
                         classDescriptor,
@@ -386,7 +396,9 @@ public class Obfuscate extends javax.swing.JFrame {
                 String methodName = methodMatcher.group(1);
                 String fullMethodName = fullClassName + "." + methodName;
 
-                if (!loadBlacklistedItems().contains(fullMethodName) && !excludedMethods.contains(methodName)) {
+                if (!loadBlacklistedItems().contains(fullMethodName)
+                        && !excludedMethods.contains(methodName)
+                        && !protectedMethodNames.contains(methodName)) {
                     String methodKey = classDescriptor + "->" + methodName;
                     methodRenameMap.putIfAbsent(methodKey, generateObfuscatedName("Method"));
                 }
@@ -430,6 +442,99 @@ public class Obfuscate extends javax.swing.JFrame {
         return "L" + packagePath + "/" + className + ";";
     }
 
+    private void collectAndroidKeepRules(Path decompiledDir) throws IOException {
+        protectedClassDescriptors.clear();
+        protectedMethodNames.clear();
+
+        String manifestPackage = "";
+        Path manifestPath = decompiledDir.resolve("AndroidManifest.xml");
+        if (Files.isRegularFile(manifestPath)) {
+            String manifest = Files.readString(manifestPath);
+            Matcher packageMatcher = Pattern.compile(
+                    "<manifest\\b[^>]*\\bpackage\\s*=\\s*[\"']([^\"']+)[\"']"
+            ).matcher(manifest);
+            if (packageMatcher.find()) {
+                manifestPackage = packageMatcher.group(1).trim();
+            }
+            collectManifestClassReferences(manifest, manifestPackage);
+        }
+
+        Path resources = decompiledDir.resolve("res");
+        if (Files.isDirectory(resources)) {
+            try (Stream<Path> stream = Files.walk(resources)) {
+                List<Path> xmlFiles = stream
+                        .filter(Files::isRegularFile)
+                        .filter(path -> path.toString().endsWith(".xml"))
+                        .toList();
+
+                for (Path xmlFile : xmlFiles) {
+                    collectResourceXmlReferences(Files.readString(xmlFile), manifestPackage);
+                }
+            }
+        }
+    }
+
+    private void collectManifestClassReferences(String xml, String manifestPackage) {
+        Matcher nameMatcher = Pattern.compile(
+                "android:name\\s*=\\s*[\"']([^\"']+)[\"']"
+        ).matcher(xml);
+
+        while (nameMatcher.find()) {
+            addProtectedClassReference(nameMatcher.group(1), manifestPackage, true);
+        }
+    }
+
+    private void collectResourceXmlReferences(String xml, String manifestPackage) {
+        Matcher customTagMatcher = Pattern.compile(
+                "<\\s*([A-Za-z_][A-Za-z0-9_.$]*\\.[A-Za-z0-9_.$]+)"
+        ).matcher(xml);
+        while (customTagMatcher.find()) {
+            addProtectedClassReference(customTagMatcher.group(1), manifestPackage, false);
+        }
+
+        Matcher classAttributeMatcher = Pattern.compile(
+                "(?:android:name|class)\\s*=\\s*[\"']([^\"']+)[\"']"
+        ).matcher(xml);
+        while (classAttributeMatcher.find()) {
+            String className = classAttributeMatcher.group(1).trim();
+            if (className.startsWith(".") || className.contains(".")) {
+                addProtectedClassReference(className, manifestPackage, false);
+            }
+        }
+
+        Matcher onClickMatcher = Pattern.compile(
+                "android:onClick\\s*=\\s*[\"']([A-Za-z_$][A-Za-z0-9_$]*)[\"']"
+        ).matcher(xml);
+        while (onClickMatcher.find()) {
+            protectedMethodNames.add(onClickMatcher.group(1));
+        }
+    }
+
+    private void addProtectedClassReference(String className, String manifestPackage, boolean allowSimpleName) {
+        String normalized = className == null ? "" : className.trim();
+        if (normalized.isEmpty() || normalized.startsWith("android.")) {
+            return;
+        }
+
+        if (normalized.startsWith(".")) {
+            if (manifestPackage.isBlank()) {
+                return;
+            }
+            normalized = manifestPackage + normalized;
+        } else if (!normalized.contains(".") && allowSimpleName) {
+            if (manifestPackage.isBlank()) {
+                return;
+            }
+            normalized = manifestPackage + "." + normalized;
+        } else if (!normalized.contains(".")) {
+            return;
+        }
+
+        protectedClassDescriptors.add(
+                "L" + normalized.replace('.', '/').replace('\\', '/') + ";"
+        );
+    }
+
     private void findMethodUsages(Path file, String content) {
         // Pattern to find method invocations, including static, virtual, direct, super, and interface methods
         Matcher methodMatcher = Pattern.compile(
@@ -445,17 +550,28 @@ public class Obfuscate extends javax.swing.JFrame {
             methodUsageMap.computeIfAbsent(key, k -> new HashSet<>()).add(file.toString());
         }
 
-        // Additionally, capture reflection-based method invocations (e.g., Class.getMethod("methodName"))
-        Matcher reflectionMatcher = Pattern.compile(
-                "const-string\\s+\\w+,\\s+\"(\\w+)\"\\s+invoke-virtual\\s+\\{[^}]*},\\s+Ljava/lang/Class;->getMethod"
+        // Conservatively protect names passed into Java reflection. Reflection
+        // cannot be rewritten reliably from Smali without whole-program type
+        // analysis, so these names are kept instead.
+        Matcher reflectionMethodMatcher = Pattern.compile(
+                "(?s)const-string(?:/jumbo)?\\s+[^,]+,\\s+\\\"([^\\\"]+)\\\""
+                + ".{0,500}?Ljava/lang/Class;->get(?:Declared)?Method"
         ).matcher(content);
 
-        while (reflectionMatcher.find()) {
-            String methodName = reflectionMatcher.group(1);  // Capture method name in reflection call
-            String key = "reflection." + methodName;  // Use a special key for reflection calls
+        while (reflectionMethodMatcher.find()) {
+            String methodName = reflectionMethodMatcher.group(1);
+            protectedMethodNames.add(methodName);
+            methodUsageMap.computeIfAbsent("reflection." + methodName, k -> new HashSet<>())
+                    .add(file.toString());
+        }
 
-            // Store method usage for reflection-based method invocations
-            methodUsageMap.computeIfAbsent(key, k -> new HashSet<>()).add(file.toString());
+        Matcher reflectionClassMatcher = Pattern.compile(
+                "(?s)const-string(?:/jumbo)?\\s+[^,]+,\\s+\\\"([A-Za-z_$][A-Za-z0-9_.$]+)\\\""
+                + ".{0,500}?Ljava/lang/Class;->forName"
+        ).matcher(content);
+
+        while (reflectionClassMatcher.find()) {
+            addProtectedClassReference(reflectionClassMatcher.group(1), "", false);
         }
     }
 
@@ -1689,6 +1805,8 @@ public class Obfuscate extends javax.swing.JFrame {
     // End of variables declaration//GEN-END:variables
     private Map<String, Set<String>> methodUsageMap = new HashMap<>();
     private final Set<String> selectedPackageNames = new HashSet<>();
+    private final Set<String> protectedClassDescriptors = new HashSet<>();
+    private final Set<String> protectedMethodNames = new HashSet<>();
     private static final Map<String, String> classRenameMap = new HashMap<>();
     private static final Map<String, String> methodRenameMap = new HashMap<>();
     private static final Map<String, String> fieldVariableRenameMap = new HashMap<>();
