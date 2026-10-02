@@ -348,7 +348,7 @@ public class Recompile extends javax.swing.JFrame {
             });
 
             // Proceed with the recompilation using the selected file path
-            String apkToolPath = new File("lib/apktool.jar").getAbsolutePath();
+            String apkToolPath = ToolLocator.require("apktool.jar");
             Path sourceDirectory = Paths.get(Main.decompiledApkPath);
 
             ProcessBuilder processBuilder = new ProcessBuilder(
@@ -505,7 +505,7 @@ public class Recompile extends javax.swing.JFrame {
     private void signApkFile(File apkFile) {
         consoleArea.append("Signing APK file...\n");
         consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
-        String uberApkSignerPath = new File("lib/uber-apk-signer.jar").getAbsolutePath();
+        String uberApkSignerPath = ToolLocator.require("uber-apk-signer.jar");
         ProcessBuilder processBuilder;
 
         if (!keyCheckBox.isSelected()) {
@@ -678,7 +678,7 @@ public class Recompile extends javax.swing.JFrame {
     private void signApkFileWithoutKey(File apkFile) {
         consoleArea.append("Signing APK file without custom key...\n");
         consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
-        String uberApkSignerPath = new File("lib/uber-apk-signer.jar").getAbsolutePath();
+        String uberApkSignerPath = ToolLocator.require("uber-apk-signer.jar");
         ProcessBuilder processBuilder = new ProcessBuilder(
                 "java", "-jar", uberApkSignerPath, "--apks", apkFile.getAbsolutePath()
         );
