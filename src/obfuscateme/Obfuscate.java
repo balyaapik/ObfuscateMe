@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -285,11 +286,9 @@ public class Obfuscate extends javax.swing.JFrame {
                 for (String selectedPackageName : selectedPackageNames) {
                     loadingLabel.setVisible(true);
 
-                    // Clear maps before processing each package
-                    classRenameMap.clear();
-                    methodRenameMap.clear();
-                    fieldVariableRenameMap.clear();
-
+                    // Keep the maps accumulated across every selected package.
+                    // Clearing here used to make multi-package obfuscation retain
+                    // only the last package processed.
                     Files.walkFileTree(decompiledDir, new SimpleFileVisitor<Path>() {
                         @Override
                         public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
@@ -362,78 +361,71 @@ public class Obfuscate extends javax.swing.JFrame {
     }
 
     private void processFileForObfuscation(String content, String fileName, String packageName) {
-        // Extract the class name from the file
         String className = fileName.replace(".smali", "");
         String fullClassName = packageName + "." + className;
+        String classDescriptor = toClassDescriptor(packageName, className);
 
         if (classesCheckBox.isSelected()) {
-            // Check if the class itself is blacklisted
-            if (!((loadBlacklistedItems().contains(fullClassName)) || (excludedClasses.contains(className)))) {
-                if (addSaltCheckBox.isSelected()) {
-                    if (addPrefixCheckBox.isSelected()) {
-                        classRenameMap.putIfAbsent(className, "Class" + generateDynamicSalt() + generateValidUUID());
-                    } else {
-                        classRenameMap.putIfAbsent(className, generateDynamicSalt() + generateValidUUID());
-                    }
-                } else {
-                    if (addPrefixCheckBox.isSelected()) {
-                        classRenameMap.putIfAbsent(className, "Class" + generateValidUUID());
-                    } else {
-                        classRenameMap.putIfAbsent(className, generateValidUUID());
-                    }
-                }
+            if (!loadBlacklistedItems().contains(fullClassName) && !excludedClasses.contains(className)) {
+                String newClassName = generateObfuscatedName("Class");
+                classRenameMap.putIfAbsent(
+                        classDescriptor,
+                        toClassDescriptor(packageName, newClassName)
+                );
             }
         }
 
         if (methodsCheckBox.isSelected()) {
-            Matcher methodMatcher = Pattern.compile("\\.method .+ (\\w+)\\(").matcher(content);
+            Matcher methodMatcher = Pattern.compile(
+                    "(?m)^\\.method\\s+(?:[^\\s]+\\s+)*([^\\s(]+)\\("
+            ).matcher(content);
+
             while (methodMatcher.find()) {
                 String methodName = methodMatcher.group(1);
                 String fullMethodName = fullClassName + "." + methodName;
 
-                // Check if the method is blacklisted within this specific class and package
-                if (!((loadBlacklistedItems().contains(fullMethodName)) || (excludedMethods.contains(methodName)))) {
-                    if (addSaltCheckBox.isSelected()) {
-                        if (addPrefixCheckBox.isSelected()) {
-                            methodRenameMap.putIfAbsent(methodName, "Method" + generateDynamicSalt() + generateValidUUID());
-                        } else {
-                            methodRenameMap.putIfAbsent(methodName, generateDynamicSalt() + generateValidUUID());
-                        }
-                    } else {
-                        if (addPrefixCheckBox.isSelected()) {
-                            methodRenameMap.putIfAbsent(methodName, "Method" + generateValidUUID());
-                        } else {
-                            methodRenameMap.putIfAbsent(methodName, generateValidUUID());
-                        }
-                    }
+                if (!loadBlacklistedItems().contains(fullMethodName) && !excludedMethods.contains(methodName)) {
+                    String methodKey = classDescriptor + "->" + methodName;
+                    methodRenameMap.putIfAbsent(methodKey, generateObfuscatedName("Method"));
                 }
             }
         }
 
         if (fieldVariablesCheckBox.isSelected()) {
-            Matcher fieldMatcher = Pattern.compile("\\.field\\s+(public|private|protected|static|final|\\s)+\\s*(\\w+)\\s*:\\s*(L[^;]+;|\\[L[^;]+;|I|Z|B|S|J|F|D|C)").matcher(content);
+            Matcher fieldMatcher = Pattern.compile(
+                    "(?m)^\\.field\\s+(?:[^\\s:]+\\s+)*([^\\s:]+)\\s*:"
+            ).matcher(content);
+
             while (fieldMatcher.find()) {
-                String fieldName = fieldMatcher.group(2);
+                String fieldName = fieldMatcher.group(1);
                 String fullFieldName = fullClassName + "." + fieldName;
 
-                // Check if the field is blacklisted within this specific class and package
                 if (!loadBlacklistedItems().contains(fullFieldName)) {
-                    if (addSaltCheckBox.isSelected()) {
-                        if (addPrefixCheckBox.isSelected()) {
-                            fieldVariableRenameMap.putIfAbsent(fieldName, "Field" + generateDynamicSalt() + generateValidUUID());
-                        } else {
-                            fieldVariableRenameMap.putIfAbsent(fieldName, generateDynamicSalt() + generateValidUUID());
-                        }
-                    } else {
-                        if (addPrefixCheckBox.isSelected()) {
-                            fieldVariableRenameMap.putIfAbsent(fieldName, "Field" + generateValidUUID());
-                        } else {
-                            fieldVariableRenameMap.putIfAbsent(fieldName, generateValidUUID());
-                        }
-                    }
+                    String fieldKey = classDescriptor + "->" + fieldName;
+                    fieldVariableRenameMap.putIfAbsent(fieldKey, generateObfuscatedName("Field"));
                 }
             }
         }
+    }
+
+    private String generateObfuscatedName(String prefix) {
+        StringBuilder result = new StringBuilder();
+        if (addPrefixCheckBox.isSelected()) {
+            result.append(prefix);
+        }
+        if (addSaltCheckBox.isSelected()) {
+            result.append(generateDynamicSalt());
+        }
+        result.append(generateValidUUID());
+        return result.toString();
+    }
+
+    private String toClassDescriptor(String packageName, String className) {
+        String packagePath = packageName.replace('.', '/');
+        if (packagePath.isBlank()) {
+            return "L" + className + ";";
+        }
+        return "L" + packagePath + "/" + className + ";";
     }
 
     private void findMethodUsages(Path file, String content) {
@@ -533,147 +525,82 @@ public class Obfuscate extends javax.swing.JFrame {
         return Obfuscate.blacklistedItems;  // Return the blacklisted items from Obfuscate
     }
 
-    // Refactor names based on the collected names
+    // Refactor names based on the collected names.
+    // Member mappings are keyed by their owning class descriptor, for example:
+    // Lcom/example/Foo;->loadData. This prevents same-named members in unrelated
+    // classes from being renamed accidentally.
     private void refactorNames() {
         SwingWorker<Void, String> worker = new SwingWorker<Void, String>() {
             @Override
             protected Void doInBackground() throws Exception {
-
-//                obfuscateButton.setEnabled(false);
-//                classesCheckBox.setEnabled(false);
-//                methodsCheckBox.setEnabled(false);
-//                fieldVariablesCheckBox.setEnabled(false);
-//                blackListClassesCheckBox.setEnabled(false);
-//                blackListMethodsCheckBox.setEnabled(false);
-//                blackListFieldVariables.setEnabled(false);
                 enableConsole();
                 backButton.setEnabled(false);
                 Path decompiledDir = Paths.get(Main.decompiledApkPath);
 
-                // Refactor within targeted packages
-                Files.walk(decompiledDir, 1)
-                        .filter(Files::isDirectory)
-                        .filter(path -> path.getFileName().toString().startsWith("smali"))
-                        .forEach(smaliDir -> {
-                            selectedPackageNames.forEach(selectedPackageName -> {
-                                Path targetDir = smaliDir.resolve(selectedPackageName.replace(".", File.separator));
-                                if (Files.exists(targetDir)) {
-                                    try {
-                                        Files.walkFileTree(targetDir, new SimpleFileVisitor<Path>() {
-                                            @Override
-                                            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                                                String content = Files.readString(file);
-                                                // Refactor class names
-                                                for (Map.Entry<String, String> entry : classRenameMap.entrySet()) {
-                                                    if (content.contains(entry.getKey())) {
-                                                        content = content.replaceAll("\\b" + Pattern.quote(entry.getKey()) + "\\b", entry.getValue());
-                                                        refactoredClassNames.add(entry.getKey()); // Add class name to the Set
-                                                        publish("Refactoring class " + entry.getKey() + " to " + entry.getValue());
-                                                    }
-                                                }
+                List<Path> smaliFiles;
+                try (Stream<Path> stream = Files.walk(decompiledDir)) {
+                    smaliFiles = stream
+                            .filter(Files::isRegularFile)
+                            .filter(path -> path.toString().endsWith(".smali"))
+                            .toList();
+                }
 
-                                                // Refactor method names
-                                                for (Map.Entry<String, String> entry : methodRenameMap.entrySet()) {
-                                                    if (content.contains(entry.getKey())) {
-                                                        content = refactorMethodUsage(content, entry.getKey(), entry.getValue());
-                                                        refactoredMethodNames.add(entry.getKey()); // Add method name to the Set
-                                                        publish("Refactoring method " + entry.getKey() + " to " + entry.getValue());
-                                                    }
-                                                }
+                for (Path file : smaliFiles) {
+                    String originalContent = Files.readString(file);
+                    String content = originalContent;
 
-                                                // Refactor field variables
-                                                for (Map.Entry<String, String> entry : fieldVariableRenameMap.entrySet()) {
-                                                    if (content.contains(entry.getKey())) {
-                                                        content = refactorFieldAccess(content, entry.getKey(), entry.getValue());
-                                                        refactoredFieldVariableNames.add(entry.getKey()); // Add field name to the Set
-                                                        publish("Refactoring field " + entry.getKey() + " to " + entry.getValue());
-                                                    }
-                                                }
+                    // Rename members first while original owner descriptors are
+                    // still present, then rename class descriptors.
+                    content = refactorMethodMappings(content);
+                    content = refactorFieldMappings(content);
+                    content = refactorClassMappings(content);
 
-                                                Files.writeString(file, content);
-                                                return FileVisitResult.CONTINUE;
-                                            }
-                                        });
-                                    } catch (IOException e) {
-                                    }
-                                }
-                            });
-                        });
-
-                // Then, refactor globally across all smali files
-                Files.walk(decompiledDir, Integer.MAX_VALUE)
-                        .filter(Files::isRegularFile)
-                        .filter(path -> path.toString().endsWith(".smali"))
-                        .forEach(file -> {
-                            try {
-                                String content = new String(Files.readAllBytes(file));
-                                boolean changed = false;
-
-                                // Refactor class names globally
-                                for (Map.Entry<String, String> entry : classRenameMap.entrySet()) {
-                                    if (content.contains(entry.getKey())) {
-                                        content = content.replaceAll("\\b" + Pattern.quote(entry.getKey()) + "\\b", entry.getValue());
-                                        publish("Refactoring class " + entry.getKey() + " to " + entry.getValue());
-                                        changed = true;
-                                    }
-                                }
-
-                                // Refactor method and field names using their global usage maps
-                                for (Map.Entry<String, String> entry : methodRenameMap.entrySet()) {
-                                    if (content.contains(entry.getKey())) {
-                                        content = refactorMethodUsage(content, entry.getKey(), entry.getValue());
-                                        publish("Refactoring method " + entry.getKey() + " to " + entry.getValue());
-                                        changed = true;
-                                    }
-                                }
-
-                                for (Map.Entry<String, String> entry : fieldVariableRenameMap.entrySet()) {
-                                    if (content.contains(entry.getKey())) {
-                                        content = refactorFieldAccess(content, entry.getKey(), entry.getValue());
-                                        publish("Refactoring field " + entry.getKey() + " to " + entry.getValue());
-                                        changed = true;
-                                    }
-                                }
-
-                                if (changed) {
-                                    Files.writeString(file, content);  // Write changes back to the file
-                                }
-                            } catch (IOException e) {
-                            }
-                        });
+                    if (!content.equals(originalContent)) {
+                        Files.writeString(file, content);
+                    }
+                }
 
                 return null;
             }
 
             @Override
             protected void process(List<String> chunks) {
-                // This method is called on the EDT
-                consoleArea.append(chunks.get(chunks.size() - 1) + "\n");
-                consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
+                if (!chunks.isEmpty()) {
+                    consoleArea.append(chunks.get(chunks.size() - 1) + "\n");
+                    consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
+                }
             }
 
             @Override
             protected void done() {
-                numberOfRefactoedClasses.set(refactoredClassNames.size()); // Reflects unique class count
-                numberOfRefactoredMethods.set(refactoredMethodNames.size()); // Reflects unique method count
-                numberOfRefactoredLFields.set(refactoredFieldVariableNames.size()); // Reflects unique Local fields count
+                try {
+                    get();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    showRefactorFailure("Refactoring was interrupted.", e);
+                    return;
+                } catch (ExecutionException e) {
+                    showRefactorFailure("Refactoring failed: " + e.getCause().getMessage(), e.getCause());
+                    return;
+                }
+
+                numberOfRefactoedClasses.set(refactoredClassNames.size());
+                numberOfRefactoredMethods.set(refactoredMethodNames.size());
+                numberOfRefactoredLFields.set(refactoredFieldVariableNames.size());
                 loadingLabel.setVisible(false);
                 enableConsole();
-                consoleArea.append("Refactoring complete.");
+                consoleArea.append("Refactoring complete.\n");
                 consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
 
-                // Ask the user if they want to proceed with recompilation
                 int result = JOptionPane.showConfirmDialog(null,
                         "Refactoring is complete. Would you like to proceed with the recompilation process?",
                         "Recompilation",
                         JOptionPane.YES_NO_OPTION);
 
-                // If the user chooses "Yes", start the recompilation
                 if (result == JOptionPane.YES_OPTION) {
                     dispose();
                     new Recompile().setVisible(true);
                 } else {
-                    // If the user chooses "No", ask if they want to open the decompilation folder
                     backButton.setEnabled(true);
                     availablePackagesTable.setEnabled(false);
                     selectedPackagesTable.setEnabled(false);
@@ -686,47 +613,140 @@ public class Obfuscate extends javax.swing.JFrame {
                             JOptionPane.YES_NO_OPTION);
 
                     if (openFolderResponse == JOptionPane.YES_OPTION) {
-                        // If yes, open the directory
-                        File directory = Main.outputDirFile; // Assuming fileToSave is the file created by the process
+                        File directory = Main.outputDirFile;
                         try {
                             Desktop.getDesktop().open(directory);
                         } catch (IOException e) {
-                            JOptionPane.showMessageDialog(null, "An error occurred while trying to open the folder.");
+                            JOptionPane.showMessageDialog(null,
+                                    "An error occurred while trying to open the folder: " + e.getMessage(),
+                                    "Open Folder Failed",
+                                    JOptionPane.ERROR_MESSAGE);
                         }
                     }
+                }
+            }
 
+            private void showRefactorFailure(String message, Throwable error) {
+                loadingLabel.setVisible(false);
+                backButton.setEnabled(true);
+                enableConsole();
+                consoleArea.append(message + "\n");
+                consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
+                JOptionPane.showMessageDialog(null, message, "Refactoring Failed", JOptionPane.ERROR_MESSAGE);
+            }
+
+            private String refactorMethodMappings(String content) {
+                String ownerDescriptor = extractClassDescriptor(content);
+                String updated = content;
+
+                for (Map.Entry<String, String> entry : methodRenameMap.entrySet()) {
+                    String key = entry.getKey();
+                    int separator = key.lastIndexOf("->");
+                    if (separator < 0) {
+                        continue;
+                    }
+
+                    String owner = key.substring(0, separator);
+                    String methodName = key.substring(separator + 2);
+                    String newMethodName = entry.getValue();
+                    String before = updated;
+
+                    if (owner.equals(ownerDescriptor)) {
+                        String definitionPattern =
+                                "(?m)(^\\.method\\s+(?:[^\\s]+\\s+)*)"
+                                + Pattern.quote(methodName) + "(\\()";
+                        updated = updated.replaceAll(
+                                definitionPattern,
+                                "$1" + Matcher.quoteReplacement(newMethodName) + "$2"
+                        );
+                    }
+
+                    String invocationPattern =
+                            Pattern.quote(owner + "->" + methodName) + "(?=\\()";
+                    updated = updated.replaceAll(
+                            invocationPattern,
+                            Matcher.quoteReplacement(owner + "->" + newMethodName)
+                    );
+
+                    if (!updated.equals(before)) {
+                        refactoredMethodNames.add(key);
+                        publish("Refactoring method " + key + " to " + newMethodName);
+                    }
                 }
 
+                return updated;
+            }
+
+            private String refactorFieldMappings(String content) {
+                String ownerDescriptor = extractClassDescriptor(content);
+                String updated = content;
+
+                for (Map.Entry<String, String> entry : fieldVariableRenameMap.entrySet()) {
+                    String key = entry.getKey();
+                    int separator = key.lastIndexOf("->");
+                    if (separator < 0) {
+                        continue;
+                    }
+
+                    String owner = key.substring(0, separator);
+                    String fieldName = key.substring(separator + 2);
+                    String newFieldName = entry.getValue();
+                    String before = updated;
+
+                    if (owner.equals(ownerDescriptor)) {
+                        String declarationPattern =
+                                "(?m)(^\\.field\\s+(?:[^\\s:]+\\s+)*)"
+                                + Pattern.quote(fieldName) + "(?=\\s*:)";
+                        updated = updated.replaceAll(
+                                declarationPattern,
+                                "$1" + Matcher.quoteReplacement(newFieldName)
+                        );
+                    }
+
+                    String usagePattern =
+                            Pattern.quote(owner + "->" + fieldName) + "(?=\\s*:)";
+                    updated = updated.replaceAll(
+                            usagePattern,
+                            Matcher.quoteReplacement(owner + "->" + newFieldName)
+                    );
+
+                    if (!updated.equals(before)) {
+                        refactoredFieldVariableNames.add(key);
+                        publish("Refactoring field " + key + " to " + newFieldName);
+                    }
+                }
+
+                return updated;
+            }
+
+            private String refactorClassMappings(String content) {
+                String updated = content;
+
+                for (Map.Entry<String, String> entry : classRenameMap.entrySet()) {
+                    String originalDescriptor = entry.getKey();
+                    String newDescriptor = entry.getValue();
+
+                    if (updated.contains(originalDescriptor)) {
+                        updated = updated.replace(originalDescriptor, newDescriptor);
+                        refactoredClassNames.add(originalDescriptor);
+                        publish("Refactoring class " + originalDescriptor + " to " + newDescriptor);
+                    }
+                }
+
+                return updated;
+            }
+
+            private String extractClassDescriptor(String content) {
+                Matcher matcher = Pattern.compile(
+                        "(?m)^\\.class\\s+[^\\n]*?\\s+(L[^;]+;)"
+                ).matcher(content);
+                return matcher.find() ? matcher.group(1) : "";
             }
         };
 
-        worker.execute(); // Execute the SwingWorker to perform the refactoring in a background thread
+        worker.execute();
     }
 
-    private String refactorMethodUsage(String content, String methodName, String newMethodName) {
-        // Refactor method definitions and usages within all contexts
-        // Handling method definitions
-        content = content.replaceAll("(\\.method\\s+(?:public|private|protected|static|final|\\s)+[^\\n]*?)\\b" + Pattern.quote(methodName) + "(\\([^\\)]*\\))", "$1" + newMethodName + "$2");
-
-        // Handling method invocations
-        // This pattern ensures that method calls are captured precisely
-        content = content.replaceAll("([^\\w])" + Pattern.quote(methodName) + "(\\()", "$1" + newMethodName + "$2");
-
-        return content;
-    }
-
-    private String refactorFieldAccess(String content, String originalFieldName, String newFieldName) {
-        // Pattern to match field declarations and usages in Smali (looking for both declarations and "->" accesses)
-        String fieldDeclarationPattern = "\\b" + Pattern.quote(originalFieldName) + "\\b(?=\\s*:)"; // matches field declarations
-        String fieldUsagePattern = "\\b" + Pattern.quote(originalFieldName) + "\\b(?=\\s*->)"; // matches field usages
-
-        // Replace field declarations
-        content = content.replaceAll(fieldDeclarationPattern, newFieldName);
-        // Replace field usages
-        content = content.replaceAll(fieldUsagePattern, newFieldName);
-
-        return content;
-    }
     // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
     private void initComponents() {
 
@@ -1235,7 +1255,12 @@ public class Obfuscate extends javax.swing.JFrame {
             // Apply refactoring wihtin the tageted package
             refactorNames();
         } catch (IOException e) {
-
+            loadingLabel.setVisible(false);
+            enableConsole();
+            String message = "Unable to prepare obfuscation: " + e.getMessage();
+            consoleArea.append(message + "\n");
+            consoleArea.setCaretPosition(consoleArea.getDocument().getLength());
+            JOptionPane.showMessageDialog(this, message, "Obfuscation Failed", JOptionPane.ERROR_MESSAGE);
         }
     }//GEN-LAST:event_obfuscateButtonActionPerformed
 
