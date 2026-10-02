@@ -55,13 +55,24 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-      - name: Install Android 14 SDK components
+      - name: Install Android 14 and 15 SDK components
         run: |
           SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
           echo "Using Android SDK root: $SDK_ROOT"
 
+          HAS_34=false
+          HAS_35=false
+
           if [[ -f "$SDK_ROOT/platforms/android-34/android.jar"              && -x "$SDK_ROOT/build-tools/34.0.0/aapt2"              && -x "$SDK_ROOT/build-tools/34.0.0/d8" ]]; then
-            echo "Android 14 SDK components are already installed."
+            HAS_34=true
+          fi
+
+          if [[ -f "$SDK_ROOT/platforms/android-35/android.jar"              && -x "$SDK_ROOT/build-tools/35.0.0/aapt2"              && -x "$SDK_ROOT/build-tools/35.0.0/d8" ]]; then
+            HAS_35=true
+          fi
+
+          if [[ "$HAS_34" == "true" && "$HAS_35" == "true" ]]; then
+            echo "Android 14 and Android 15 SDK components are already installed."
             exit 0
           fi
 
@@ -74,7 +85,7 @@ jobs:
 
           echo "Using sdkmanager: $SDKMANAGER"
           yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
-          "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platforms;android-34" "build-tools;34.0.0"
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT"             "platforms;android-34" "build-tools;34.0.0"             "platforms;android-35" "build-tools;35.0.0"
 
       - name: Android 14 APK round-trip test
         run: bash scripts/test-android14.sh
@@ -86,4 +97,17 @@ jobs:
           path: |
             build/android14-integration/signed-original/*.apk
             build/android14-integration/signed-rebuilt/*.apk
+          if-no-files-found: error
+
+
+      - name: Android 15 APK round-trip test
+        run: bash scripts/test-android15.sh
+
+      - name: Upload Android 15 integration APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: android15-integration-apks
+          path: |
+            build/android15-integration/signed-original/*.apk
+            build/android15-integration/signed-rebuilt/*.apk
           if-no-files-found: error
